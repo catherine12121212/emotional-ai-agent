@@ -14,7 +14,7 @@ from openai import OpenAI
 # ---------------------------
 # Streamlit & API setup
 # ---------------------------
-st.set_page_config(page_title="Guagua", page_icon="🫧", layout="centered")
+st.set_page_config(page_title="Nino", page_icon="🫧", layout="centered")
 
 api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
 if not api_key:
@@ -401,7 +401,7 @@ def render_practice_button(module: dict, uid: str):
 # =========================================================
 # UI: header & sidebar
 # =========================================================
-st.title("🌙 Emotion-Aware AI Companion")
+st.title("Hi! I am Nino🫧")
 st.caption("Dual Mode · Counselor / Companion · Automatic model fallback")
 
 with st.sidebar:
