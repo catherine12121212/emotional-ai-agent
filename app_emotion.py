@@ -1,12 +1,18 @@
 # app_emotion.py
 import streamlit as st
 from openai import OpenAI
-import re
-import os
+import os, re
 
-# --- 讀取 API key ---
-api_key = st.secrets.get("OPENAI_API_KEY", os.environ.get("OPENAI_API_KEY"))
+st.set_page_config(page_title="Emotion-Aware AI Companion", page_icon="🌿", layout="centered")
+
+# 讀 API key（Secrets 優先，否則讀環境變數）
+api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+if not api_key:
+    st.error("❌ OPENAI_API_KEY not found. Go to Settings → Secrets and add:\nOPENAI_API_KEY = sk-xxxx")
+    st.stop()
+
 client = OpenAI(api_key=api_key)
+
 
 # --- Streamlit 基本設定 ---
 st.set_page_config(page_title="Emotion-Aware AI Companion", page_icon="🌿", layout="centered")
