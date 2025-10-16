@@ -76,7 +76,7 @@ if user_input := st.chat_input("How are you feeling right now?"):
     with st.chat_message("assistant"):
         with st.spinner("Listening with care..."):
             response = client.chat.completions.create(
-                model="gpt-5",   # 也可改成 "gpt-4o" 或 "gpt-4"
+                model="gpt-4o",   # 也可改成 "gpt-4o" 或 "gpt-4"
                 messages=[
                     {"role": "system", "content": system_context},
                     *[msg for msg in st.session_state.messages if msg["role"] != "system"]
