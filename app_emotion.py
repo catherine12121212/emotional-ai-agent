@@ -14,7 +14,7 @@ from openai import OpenAI
 # ---------------------------
 # Streamlit & API setup
 # ---------------------------
-st.set_page_config(page_title="Emotion-Aware AI Companion", page_icon="🌿", layout="centered")
+st.set_page_config(page_title="Guagua", page_icon="🫧", layout="centered")
 
 api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
 if not api_key:
