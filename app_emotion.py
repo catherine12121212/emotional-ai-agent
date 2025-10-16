@@ -1,18 +1,19 @@
 # app_emotion.py
-# -------------------------------------------
-# Emotion-Aware AI Companion (Algorithm Edition)
-# - Implements: perception → evaluation → intent → strategy → generation
-# - Excludes: explicit safety confirmation / crisis handoff scripts (per your request)
-# -------------------------------------------
+# ---------------------------------------------------------
+# Emotion-Aware AI Companion (with graceful model fallback)
+# - Algorithm: perception → evaluation → intent → strategy → generation
+# - No crisis/safety confirmation flow (per request)
+# - Auto-detect available models; gracefully fall back to latest usable
+# ---------------------------------------------------------
 
 import os, re, json, random, datetime
 import streamlit as st
 from openai import OpenAI
 
 # ---------------------------
-# App & API setup
+# Streamlit & API setup
 # ---------------------------
-st.set_page_config(page_title="Cocoro", page_icon="🫧", layout="centered")
+st.set_page_config(page_title="Emotion-Aware AI Companion", page_icon="🌿", layout="centered")
 
 api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
 if not api_key:
@@ -37,11 +38,88 @@ Tone: calm, grounded, kind, non-clinical, and concise.
 Do not include any crisis or safety protocol in your responses.
 """
 
-# ---------------------------
-# Lightweight emotion detection
-# ---------------------------
+# =========================================================
+# Model discovery & graceful fallback
+# =========================================================
+
+# 偏好順序：會自動從上到下挑選你帳戶可用的第一個
+PREFERRED_MODELS = [
+    # GPT-5 系列（若你的帳戶已開通會自動使用）
+    "gpt-5",
+    "gpt-5-mini",
+    # 其他最新版（依你帳戶實際權限）
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4-turbo",
+]
+
+@st.cache_data(show_spinner=False, ttl=300)
+def list_available_models_safely():
+    """嘗試列出該 API key 可用的模型清單；失敗則回空清單。"""
+    try:
+        models = client.models.list()
+        return sorted([m.id for m in models.data])
+    except Exception:
+        return []
+
+def pick_best_model(available_ids):
+    """從 available_ids 中挑 PREFERRED_MODELS 的第一個；若 available_ids 為空，直接使用偏好清單逐一嘗試。"""
+    if available_ids:
+        for m in PREFERRED_MODELS:
+            if m in available_ids:
+                return m
+    # 若取不到清單或清單沒命中，就先回偏好表頭，實際呼叫時會再做多重降級重試
+    return PREFERRED_MODELS[0]
+
+def safe_chat_completion(messages, temperature=0.8):
+    """
+    優雅降級：
+    1) 先用「可用模型清單」命中的最佳候選
+    2) 失敗則依序嘗試 PREFERRED_MODELS
+    3) 全數失敗則回一段友善訊息
+    """
+    available = list_available_models_safely()
+    trial_order = []
+
+    # 先放一個「最佳可用」做第一順位
+    best = pick_best_model(available)
+    if best:
+        trial_order.append(best)
+
+    # 再補上整個偏好清單（去重）
+    for m in PREFERRED_MODELS:
+        if m not in trial_order:
+            trial_order.append(m)
+
+    last_err = None
+    used_model = None
+    for m in trial_order:
+        try:
+            resp = client.chat.completions.create(
+                model=m,
+                messages=messages,
+                temperature=temperature,
+            )
+            used_model = m
+            return resp.choices[0].message.content.strip(), used_model
+        except Exception as e:
+            last_err = e
+            continue
+
+    # 全部失敗時的保底訊息（不中斷 App）
+    friendly = (
+        "抱歉，我剛剛在產生回覆時遇到模型連線或權限設定的問題。"
+        "請稍後再試，或在側邊欄檢查『可用模型清單』是否含有 gpt-4o / gpt-4o-mini 等。"
+    )
+    return friendly, used_model
+
+# =========================================================
+# Emotion & intent detection
+# =========================================================
 EMOTION_LEX = {
-    "anxiety": ["anxious","panic","panicking","nervous","worried","pressure","stressed","overthinking","overwhelm","tense","tense","afraid","scared"],
+    "anxiety": ["anxious","panic","panicking","nervous","worried","pressure","stressed","overthinking","overwhelm","tense","afraid","scared"],
     "sadness": ["sad","lonely","upset","tired","hurt","empty","numb","down","blue","depressed","cry","crying","loss","grief"],
     "anger":   ["angry","frustrated","irritated","mad","furious","rage","annoyed","resentful"],
     "shame":   ["ashamed","shame","embarrassed","humiliated","guilty","worthless","not enough","failure"],
@@ -63,10 +141,8 @@ def detect_emotion(text: str) -> str:
             return emo
     return "neutral"
 
-# ---------------------------
-# Intent & lightweight risk scoring (no crisis routing)
-# ---------------------------
 def analyze_intent_and_risk(text: str):
+    """沒有危機轉介，只做意圖＋風險指標（用來調整語氣/介入選擇）"""
     tl = text.lower()
     # intent
     if any(p in tl for p in ["what should i", "should i", "how do i", "how should i", "what can i do", "help me", "advise"]):
@@ -79,17 +155,16 @@ def analyze_intent_and_risk(text: str):
         intent = "explore"
     else:
         intent = "venting"
-
-    # risk score (for tone modulation only; we do NOT branch into safety script)
+    # risk marker score (僅用於調整建議，非轉介)
     risk_score = 0
     if any(w in tl for w in ["disappear","give up on life","i don't want to be here"]): risk_score += 2
     if any(w in tl for w in ["die","death","kill myself","suicide","hurt myself"]):     risk_score += 3
     if any(w in tl for w in ["can't sleep","awake all night","no appetite","binge"]):   risk_score += 1
     return intent, min(risk_score, 5)
 
-# ---------------------------
-# Intervention modules (solutions toolbox)
-# ---------------------------
+# =========================================================
+# Interventions toolbox
+# =========================================================
 INTERVENTIONS = {
     "CBT_THOUGHT_RECORD": {
         "name": "CBT Thought Record",
@@ -210,7 +285,6 @@ INTERVENTIONS = {
     }
 }
 
-# Mapping from emotion/intent → suggested intervention keys
 INTERVENTION_ROUTER = {
     "anxiety": {
         "venting":  ["GROUNDING_54321","BREATH_BOX","EMOTIONAL_LABELING","ACTION_STEP"],
@@ -258,17 +332,16 @@ INTERVENTION_ROUTER = {
 
 def choose_intervention(emotion: str, intent: str, risk_score: int) -> str:
     pool = INTERVENTION_ROUTER.get(emotion, INTERVENTION_ROUTER["neutral"]).get(intent, INTERVENTION_ROUTER["neutral"]["venting"])
-    # If emotional content is intense (risk markers present), bias toward somatic downshift first
     if risk_score >= 3:
         priority = [k for k in pool if k in ("DBT_TIPP","BREATH_BOX","GROUNDING_54321","EMOTIONAL_LABELING")]
         if priority:
             return random.choice(priority)
     return random.choice(pool)
 
-# ---------------------------
-# Core algorithm: structured reply via LLM
-# ---------------------------
-def generate_structured_reply(user_text: str, emotion: str, intent: str, tone_instruction: str, intervention_key: str) -> str:
+# =========================================================
+# Core LLM reply generator (uses graceful fallback)
+# =========================================================
+def generate_structured_reply(user_text: str, emotion: str, intent: str, tone_instruction: str, intervention_key: str):
     module = INTERVENTIONS[intervention_key]
     module_name = module["name"]
     module_desc = module["desc"]
@@ -276,22 +349,19 @@ def generate_structured_reply(user_text: str, emotion: str, intent: str, tone_in
     sys = f"""{BASE_PERSONA}
 Tone style: {tone_instruction}
 Emotional focus: {emotion}; User intent: {intent}.
-In your final message, do NOT mention any 'protocol' or 'crisis' or 'safety script'.
-Keep it to ~3 short paragraphs max.
+Keep to ~3 short paragraphs max.
 """
 
-    # We pass the intervention metadata so the model can tailor the "Step 3"
     tool_context = {
         "intervention": {
             "key": intervention_key,
             "name": module_name,
             "desc": module_desc,
-            "howto": INTERVENTIONS[intervention_key]["howto"][:3]  # keep concise for the chat reply
+            "howto": INTERVENTIONS[intervention_key]["howto"][:3]
         }
     }
 
-    resp = client.chat.completions.create(
-        model="gpt-5",
+    reply_text, used_model = safe_chat_completion(
         messages=[
             {"role": "system", "content": sys},
             {"role": "user", "content": user_text},
@@ -299,63 +369,68 @@ Keep it to ~3 short paragraphs max.
         ],
         temperature=0.8,
     )
-    return resp.choices[0].message.content.strip(), module
+    return reply_text, module, used_model
 
-# ---------------------------
+# =========================================================
 # Session state
-# ---------------------------
+# =========================================================
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "system", "content": BASE_PERSONA}]
 if "log" not in st.session_state:
-    st.session_state.log = []  # store emotion/intent/module per turn
+    st.session_state.log = []
+if "last_used_model" not in st.session_state:
+    st.session_state.last_used_model = None
 
-# ---------------------------
+# =========================================================
 # UI
-# ---------------------------
+# =========================================================
 st.title("🌙 Emotion-Aware AI Companion")
-st.markdown("A gentle, emotionally intelligent AI that listens and responds with empathy — now powered by a structured response algorithm.")
+st.markdown("A gentle, emotionally intelligent AI that listens and responds with empathy — with automatic model fallback.")
 
 with st.sidebar:
     st.subheader("Response Engine")
-    st.caption("This build excludes crisis/safety scripts, per your configuration.")
-    default_model = st.selectbox("Model (display only)", ["gpt-5"], index=0, disabled=True)
+    avail_ids = list_available_models_safely()
+    if avail_ids:
+        st.caption("✅ 你的帳戶目前可用模型：")
+        st.code("\n".join(avail_ids), language="text")
+    else:
+        st.caption("⚠️ 目前無法列出模型（可能是權限或網路問題）。我仍會自動嘗試常見模型。")
     st.markdown("---")
-    st.write("**Interventions toolbox**")
+    st.write("**此回合使用的模型**")
+    st.info(st.session_state.last_used_model or "尚未產生回覆")
+    st.markdown("---")
+    st.write("**Interventions toolbox (keys → names)**")
     st.json({k: v["name"] for k, v in INTERVENTIONS.items()})
 
-# Render history (exclude system)
+# Render history
 for msg in st.session_state.messages:
     if msg["role"] != "system":
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-# ---------------------------
+# =========================================================
 # Chat input
-# ---------------------------
+# =========================================================
 user_input = st.chat_input("How are you feeling right now?")
 if user_input:
-    # Append user
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Perception → Evaluation → Intent
     emotion = detect_emotion(user_input)
     intent, risk_score = analyze_intent_and_risk(user_input)
     tone_instruction = TONE_PROMPTS.get(emotion, TONE_PROMPTS["neutral"])
     intervention_key = choose_intervention(emotion, intent, risk_score)
     intervention_module = INTERVENTIONS[intervention_key]
 
-    # Visual tags
     st.markdown(
         f"**🫧 Detected emotion:** `{emotion}` &nbsp;|&nbsp; **Intent:** `{intent}` &nbsp;|&nbsp; **Suggested module:** `{intervention_module['name']}`"
         + (f" &nbsp;|&nbsp; *intensity marker present*" if risk_score >= 3 else "")
     )
 
-    # Generate reply
     with st.chat_message("assistant"):
         with st.spinner("Listening with care..."):
-            ai_reply, module = generate_structured_reply(
+            ai_reply, module, used_model = generate_structured_reply(
                 user_text=user_input,
                 emotion=emotion,
                 intent=intent,
@@ -364,28 +439,27 @@ if user_input:
             )
             ai_reply = re.sub(r'^\s+', '', ai_reply)
             st.markdown(ai_reply)
+            st.session_state.last_used_model = used_model
 
-            # Show module card (concise)
             with st.expander(f"📎 Practice card — {module['name']}"):
                 st.markdown(f"**What it is:** {module['desc']}")
                 st.markdown("**Try this now:**")
                 for step in module["howto"]:
                     st.markdown(f"- {step}")
 
-    # Append assistant
     st.session_state.messages.append({"role": "assistant", "content": ai_reply})
-    # Log meta
     st.session_state.log.append({
         "ts": datetime.datetime.now().isoformat(),
         "emotion": emotion,
         "intent": intent,
         "risk_score": risk_score,
-        "module": intervention_key
+        "module": intervention_key,
+        "model_used": st.session_state.last_used_model,
     })
 
-# ---------------------------
+# =========================================================
 # Reflection & Export
-# ---------------------------
+# =========================================================
 with st.expander("🪞 Self-Reflection"):
     mood = st.radio("How do you feel after this chat?",
                     ["Lighter", "Still heavy", "Calmer", "Hopeful", "Confused"], index=None)
@@ -400,4 +474,4 @@ with st.expander("🪞 Self-Reflection"):
                            use_container_width=True)
 
 st.markdown("---")
-st.caption("💚 Designed by Catherine Liu · Emotion-Aware Algorithmic Companion · Powered by GPT-5 & Streamlit")
+st.caption("💚 Designed by Catherine Liu · Emotion-Aware Algorithmic Companion · Automatic Model Fallback")
