@@ -1,10 +1,7 @@
 # app_emotion.py
 # ---------------------------------------------------------
 # Emotion-Aware AI Companion (Dual Mode + Graceful Fallback)
-# - Modes: Counselor (structured) / Companion (human-like)
-# - Auto-detect available models; gracefully fall back
-# - No crisis/safety confirmation flow
-# - "Practice card" → compact inline "Try practice 💫" action button
+# + Working Case Formulation & Transparent Reasoning Panel
 # ---------------------------------------------------------
 
 import os, re, json, random, datetime, time
@@ -51,10 +48,8 @@ Keep replies short and conversational (2–3 brief paragraphs max).
 # Model discovery & graceful fallback
 # =========================================================
 PREFERRED_MODELS = [
-    # GPT-5 family (will be used if your account has access)
     "gpt-5",
     "gpt-5-mini",
-    # Other modern chat models
     "gpt-4.1",
     "gpt-4.1-mini",
     "gpt-4o",
@@ -121,7 +116,7 @@ EMOTION_LEX = {
     "anxiety": ["anxious","panic","panicking","nervous","worried","pressure","stressed","overthinking","overwhelm","tense","afraid","scared","焦慮","緊張","擔心","慌"],
     "sadness": ["sad","lonely","upset","tired","hurt","empty","numb","down","blue","depressed","cry","crying","loss","grief","難過","孤單","失落","低落","想哭","空"],
     "anger":   ["angry","frustrated","irritated","mad","furious","rage","annoyed","resentful","生氣","憤怒","不爽"],
-    "shame":   ["ashamed","shame","embarrassed","humiliated","guilty","worthless","not enough","failure","丟臉","羞愧","內疚","沒用","失敗者"],
+    "shame":   ["ashamed","shame","embarrassed","humiliated","guilty","worthless","not enough","failure","丟臉","羞愧","內疚","沒用","失敗者","很爛","很廢"],
     "calm":    ["happy","grateful","peaceful","content","okay","fine","relieved","light","平靜","放鬆","輕鬆","感謝","還好"],
 }
 TONE_PROMPTS = {
@@ -145,7 +140,7 @@ def analyze_intent_and_risk(text: str):
     tl = text.lower()
     if any(p in tl for p in ["what should i", "should i", "how do i", "how should i", "what can i do", "help me", "advise", "我要怎麼辦","該不該","怎麼做"]):
         intent = "help"
-    elif any(p in tl for p in ["i'm sorry","my fault","i shouldn't","i always mess up","blame myself","都是我的錯","我很糟"]):
+    elif any(p in tl for p in ["i'm sorry","my fault","i shouldn't","i always mess up","blame myself","都是我的錯","我很糟","我很爛","我很廢"]):
         intent = "self-blame"
     elif any(p in tl for p in ["whatever","forget it","no point","doesn't matter","算了","都沒差","懶得講"]):
         intent = "avoid"
@@ -327,9 +322,136 @@ def choose_intervention(emotion: str, intent: str, risk_score: int) -> str:
     return random.choice(pool)
 
 # =========================================================
+# ==== NEW: Simple case formulation engine & reasoning text
+# =========================================================
+def infer_case_formulation(user_text: str, emotion: str, intent: str, prev_formulation=None):
+    """
+    Lightweight working case formulation:
+    - themes: self-worth / performance pressure / relationships / mood & energy
+    - patterns: perfectionism / global self-criticism / should statements
+    - hypotheses: short, human-readable working ideas
+    """
+    tl = user_text.lower()
+
+    if prev_formulation is None:
+        cf = {
+            "themes": [],
+            "patterns": [],
+            "hypotheses": []
+        }
+    else:
+        # copy to avoid mutating original directly
+        cf = {
+            "themes": list(set(prev_formulation.get("themes", []))),
+            "patterns": list(set(prev_formulation.get("patterns", []))),
+            "hypotheses": list(set(prev_formulation.get("hypotheses", [])))
+        }
+
+    def add_theme(t):
+        if t not in cf["themes"]:
+            cf["themes"].append(t)
+
+    def add_pattern(p):
+        if p not in cf["patterns"]:
+            cf["patterns"].append(p)
+
+    def add_hypo(h):
+        if h not in cf["hypotheses"]:
+            cf["hypotheses"].append(h)
+
+    # --- themes ---
+    if any(k in tl for k in ["not enough","worthless","failure","我很糟","我很爛","我很廢","不夠好","沒價值"]):
+        add_theme("self-worth / adequacy")
+    if any(k in tl for k in ["report","meeting","performance","deadline","考試","工作","上班","表現","績效"]):
+        add_theme("performance pressure")
+    if any(k in tl for k in ["mom","mother","dad","father","爸","媽","父母","家人"]):
+        add_theme("family / early expectations")
+    if any(k in tl for k in ["relationship","boyfriend","girlfriend","partner","男友","女友","感情","戀愛"]):
+        add_theme("relationships")
+    if any(k in tl for k in ["tired","exhausted","burnout","burned out","好累","倦怠","撐不住"]):
+        add_theme("mood & energy")
+
+    # --- patterns ---
+    if any(k in tl for k in ["should","must","have to","一定要","應該","不能失誤","不可以犯錯","完美"]):
+        add_pattern("perfectionism / high standards")
+    if any(k in tl for k in ["always","never","every time","每次","都這樣","總是"]):
+        add_pattern("overgeneralization")
+    if any(k in tl for k in ["i'm the problem","都是我的錯","怪我","my fault","i ruin","我害的"]):
+        add_pattern("global self-criticism")
+    if intent == "self-blame":
+        add_pattern("self-blame focus")
+
+    # --- hypotheses (very lightweight, just for transparency) ---
+    if "self-worth / adequacy" in cf["themes"] and "perfectionism / high standards" in cf["patterns"]:
+        add_hypo("possible core belief: 'I must perform well to be worthy / acceptable.'")
+    if "family / early expectations" in cf["themes"]:
+        add_hypo("early family messages may be shaping how you evaluate yourself now.")
+    if emotion == "shame":
+        add_hypo("shame may be activated when you feel 'seen' as imperfect.")
+
+    return cf
+
+def build_reasoning_text(emotion: str,
+                         intent: str,
+                         risk_score: int,
+                         intervention_key: str,
+                         case_formulation: dict) -> str:
+    """
+    Turn internal tags (emotion, intent, formulation, intervention) into
+    a human-readable mini explanation for the user.
+    """
+    lines = []
+    lines.append(f"- **Detected emotion**: `{emotion}`")
+    lines.append(f"- **Detected intent**: `{intent}`")
+    if risk_score >= 3:
+        lines.append(f"- **Intensity marker**: I noticed some stronger distress signals in your words.")
+
+    themes = case_formulation.get("themes") or []
+    patterns = case_formulation.get("patterns") or []
+    hypos = case_formulation.get("hypotheses") or []
+
+    if themes:
+        lines.append(f"- **Current themes I'm tracking**: " + ", ".join(themes))
+    if patterns:
+        lines.append(f"- **Patterns I'm noticing in how you talk to yourself**: " + ", ".join(patterns))
+    if hypos:
+        # show at most 2 to keep it readable
+        shown = hypos[:2]
+        lines.append(f"- **Working hypotheses (not judgments, just gentle guesses)**:")
+        for h in shown:
+            lines.append(f"  - {h}")
+
+    module = INTERVENTIONS.get(intervention_key)
+    if module:
+        reason = ""
+        if intervention_key in ("SELF_COMPASSION", "EMOTIONAL_LABELING"):
+            reason = "because there is a lot of self-criticism or heavy emotion, I chose something that softens the inner voice and helps you name what you feel."
+        elif intervention_key in ("CBT_THOUGHT_RECORD",):
+            reason = "because your thoughts jump quickly to harsh conclusions about yourself, I chose something that slows down and examines the thought step by step."
+        elif intervention_key in ("GROUNDING_54321","BREATH_BOX","DBT_TIPP","BODY_SCAN"):
+            reason = "because your nervous system may feel activated or overwhelmed, I chose something that first helps your body and mind settle a bit."
+        elif intervention_key in ("REFLECTIVE_QUESTION","GRATITUDE_PROMPT"):
+            reason = "because you seemed to be exploring and wondering, I chose something that opens a gentle space for reflection."
+        elif intervention_key in ("ACTION_STEP","DESC_SCRIPT","SLEEP_HYGIENE_MINI"):
+            reason = "because you sounded ready for a small bit of change, I chose something that turns this into a tiny, doable action."
+
+        lines.append(
+            f"- **Chosen micro-step**: `{module['name']}` — {module['desc']}"
+        )
+        if reason:
+            lines.append(f"  - I picked this {reason}")
+
+    return "\n".join(lines)
+
+# =========================================================
 # Core generators
 # =========================================================
-def generate_counselor_reply(user_text: str, emotion: str, intent: str, tone_instruction: str, intervention_key: str):
+def generate_counselor_reply(user_text: str,
+                             emotion: str,
+                             intent: str,
+                             tone_instruction: str,
+                             intervention_key: str,
+                             case_formulation: dict):  # ==== NEW param
     module = INTERVENTIONS[intervention_key]
     sys = f"""{COUNSELOR_PROMPT}
 Tone hint: {tone_instruction}
@@ -342,14 +464,15 @@ Emotion focus: {emotion}; Intent: {intent}.
             "name": module["name"],
             "desc": module["desc"],
             "howto": module["howto"][:3]
-        }
+        },
+        "case_formulation": case_formulation  # ==== NEW: pass working formulation to the model
     }
 
     reply_text, used_model = safe_chat_completion(
         messages=[
             {"role": "system", "content": sys},
             {"role": "user", "content": user_text},
-            {"role": "system", "content": "Context for a gentle Step 3:\n" + json.dumps(tool_context, ensure_ascii=False)}
+            {"role": "system", "content": "Context for a gentle Step 3 and for understanding the user:\n" + json.dumps(tool_context, ensure_ascii=False)}
         ],
         temperature=0.8,
     )
@@ -378,7 +501,14 @@ if "log" not in st.session_state:
 if "last_used_model" not in st.session_state:
     st.session_state.last_used_model = None
 if "practice_toggle" not in st.session_state:
-    st.session_state.practice_toggle = {}  # per-message toggles
+    st.session_state.practice_toggle = {}
+# ==== NEW: working case formulation in session
+if "case_formulation" not in st.session_state:
+    st.session_state.case_formulation = {
+        "themes": [],
+        "patterns": [],
+        "hypotheses": []
+    }
 
 # Helper to render a tiny inline practice toggle
 def render_practice_button(module: dict, uid: str):
@@ -386,7 +516,6 @@ def render_practice_button(module: dict, uid: str):
     key_state = f"show_practice_{uid}"
     show_now = st.session_state.practice_toggle.get(key_state, False)
 
-    # Compact row: button + (optional) inline panel
     cols = st.columns([1, 6])
     with cols[0]:
         if st.button("💫 Try practice", key=key_btn, use_container_width=True):
@@ -452,21 +581,41 @@ if user_input:
     with st.chat_message("assistant"):
         with st.spinner("Listening with care..."):
             if "Counselor" in mode:
+                # ==== NEW: update & use working case formulation
+                updated_cf = infer_case_formulation(
+                    user_text=user_input,
+                    emotion=emotion,
+                    intent=intent,
+                    prev_formulation=st.session_state.case_formulation
+                )
+                st.session_state.case_formulation = updated_cf
+
                 intervention_key = choose_intervention(emotion, intent, risk_score)
                 ai_reply, module, used_model = generate_counselor_reply(
                     user_text=user_input,
                     emotion=emotion,
                     intent=intent,
                     tone_instruction=tone_instruction,
-                    intervention_key=intervention_key
+                    intervention_key=intervention_key,
+                    case_formulation=updated_cf
                 )
                 st.session_state.last_used_model = used_model
                 ai_reply = re.sub(r'^\s+', '', ai_reply)
                 st.markdown(ai_reply)
 
-                # Inline action button (replaces the old Practice card)
                 uid = datetime.datetime.now().strftime("%Y%m%d%H%M%S%f")
                 render_practice_button(module, uid)
+
+                # ==== NEW: show internal reasoning to user
+                reasoning_text = build_reasoning_text(
+                    emotion=emotion,
+                    intent=intent,
+                    risk_score=risk_score,
+                    intervention_key=intervention_key,
+                    case_formulation=updated_cf
+                )
+                with st.expander("🧠 Why I responded this way (Nino's internal notes)"):
+                    st.markdown(reasoning_text)
 
                 st.session_state.messages.append({"role": "assistant", "content": ai_reply})
                 st.session_state.log.append({
@@ -477,6 +626,8 @@ if user_input:
                     "risk_score": risk_score,
                     "module": intervention_key,
                     "model_used": st.session_state.last_used_model,
+                    "case_formulation": updated_cf,
+                    "reasoning": reasoning_text,
                 })
             else:
                 ai_reply, used_model = generate_companion_reply(
@@ -498,6 +649,9 @@ if user_input:
                     "risk_score": risk_score,
                     "module": None,
                     "model_used": st.session_state.last_used_model,
+                    # companion mode 不做 formulation，但可以留空
+                    "case_formulation": None,
+                    "reasoning": None,
                 })
 
 # =========================================================
@@ -517,4 +671,4 @@ with st.expander("🪞 Self-reflection"):
                            use_container_width=True)
 
 st.markdown("---")
-st.caption("💚 Designed by Catherine Liu · Dual-Mode Emotion Companion · Automatic Model Fallback")
+st.caption("💚 Designed by Catherine Liu · Dual-Mode Emotion Companion · Automatic Model Fallback + Transparent Reasoning")
