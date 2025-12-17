@@ -4,77 +4,72 @@
 #include <Adafruit_NeoPixel.h>
 #include <math.h>
 
-// ====================== CONFIGURATION ======================
-// ST7789 Pins (Eyes)
+// ====================== 1. 硬體接腳設定 (ESP32-C3) ======================
+// 螢幕接腳 (依據你的接線，若有不同請修改)
 #define TFT_CS   2
 #define TFT_DC   1
 #define TFT_RST  10
 #define TFT_MOSI 6
 #define TFT_SCK  4
 
-// WS2812 LED Pins (The "Body")
-#define LED_PIN     3      
-#define LED_COUNT   4      
+// LED 與 馬達接腳
+#define LED_PIN     3      // WS2812 訊號腳
+#define LED_COUNT   4      // 假設你有 4 顆燈 (或 1 顆)
 
-// LRA Motor Pins (The "Touch")
-#define MOTOR_LEFT_PIN   8
-#define MOTOR_RIGHT_PIN  9
+#define MOTOR_LEFT_PIN   8 // 左馬達
+#define MOTOR_RIGHT_PIN  9 // 右馬達
 
-// ====================== OBJECTS ======================
+// ====================== 2. 亮度與色彩設定 (關鍵修改) ======================
+// 為了透出手機殼，這裡設比較亮 (範圍 0-255)
+// ⚠️ 如果太燙，請調低至 120 左右
+#define MASTER_BRIGHTNESS 180 
+
+// ====================== 物件宣告 ======================
 Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
 GFXcanvas16 eyeCanvas(240, 240); 
+
+// ⚠️ 注意：如果你發現顏色怪怪的 (例如暖光變藍光)，請把 NEO_GRB 改成 NEO_RGB
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-// ====================== MODES ======================
+// ====================== 模式定義 ======================
 enum Mode {
-  MODE_ANCHOR     = 1, // Acute Anxiety (Breathing Guide)
-  MODE_ANCHOR_2   = 2, // Overwhelm (Heartbeat Grounding)
-  MODE_SHIFT      = 3, // Rumination (Bilateral Tapping)
-  MODE_SPARK_LOW  = 4, // Low Mood (Connection)
-  MODE_SPARK_LONE = 5, // Loneliness (Connection)
-  MODE_AMBIENT    = 6  // Insight/Idle (Ambient Aliveness)
+  MODE_ANCHOR     = 1, // 呼吸 (Breathing) - 暖光
+  MODE_ANCHOR_2   = 2, // 心跳 (Heartbeat) - 紅光
+  MODE_SHIFT      = 3, // 切換 (Bilateral) - 冷白光
+  MODE_SPARK_LOW  = 4, // 燭光 (Candle) - 金黃
+  MODE_SPARK_LONE = 5, // 燭光 (Spark) - 金黃
+  MODE_AMBIENT    = 6  // 待機 (Idle) - 淡暖白
 };
 
 uint8_t currentMode = MODE_ANCHOR;
 String serialBuffer;
 
-// ====================== EYE PARAMETERS ======================
+// ====================== 眼睛參數 ======================
 int eyeRadius   = 55;
 int irisRadius  = 26;
 int pupilRadius = 12;
+float eyeOffsetX = 0.0f; float eyeOffsetY = 0.0f;
+float moveTargetX = 0.0f; float moveTargetY = 0.0f;
+float moveStartX = 0.0f; float moveStartY = 0.0f;
+unsigned long moveStartTime = 0; unsigned long moveDuration = 1000;
+unsigned long nextMoveTime = 0; bool moving = false;
+bool blinkActive = false; unsigned long blinkStartTime = 0;
+unsigned long blinkDuration = 180; unsigned long nextBlinkTime = 0; float blinkAmount = 0.0f;
 
-float eyeOffsetX = 0.0f;
-float eyeOffsetY = 0.0f;
-float moveTargetX = 0.0f;
-float moveTargetY = 0.0f;
-float moveStartX = 0.0f;
-float moveStartY = 0.0f;
-unsigned long moveStartTime = 0;
-unsigned long moveDuration  = 1000;
-unsigned long nextMoveTime  = 0;
-bool moving = false;
-
-// Blink
-bool blinkActive = false;
-unsigned long blinkStartTime = 0;
-unsigned long blinkDuration  = 180;
-unsigned long nextBlinkTime  = 0;
-float blinkAmount = 0.0f;
-
-// ====================== SENSORY STATE VARIABLES ======================
+// ====================== 狀態變數 ======================
 unsigned long lastShiftTime = 0;
 bool shiftSideLeft = true; 
-const int SHIFT_INTERVAL = 800; 
+const int SHIFT_INTERVAL = 800; // 左右切換速度
 
 unsigned long lastFlickerTime = 0;
 uint8_t currentFlickerBright = 100;
 
-// Breathing State
-const int INHALE_TIME = 4000; // 4 seconds inhale
-const int EXHALE_TIME = 6000; // 6 seconds exhale (longer for calming)
+// 呼吸參數 (4秒吸 / 6秒吐)
+const int INHALE_TIME = 4000; 
+const int EXHALE_TIME = 6000; 
 unsigned long breathCycleStart = 0;
 
-// ====================== UTILS ======================
+// ====================== 工具函式 ======================
 float clamp01(float v) {
   if (v < 0.0f) return 0.0f;
   if (v > 1.0f) return 1.0f;
@@ -86,12 +81,13 @@ float easeInOut(float t) {
   return t * t * (3.0f - 2.0f * t);
 }
 
-void setLedColor(int index, uint8_t r, uint8_t g, uint8_t b, float brightness01) {
-  brightness01 = clamp01(brightness01);
+// 設定顏色 (自動套用全域亮度)
+void setLedColor(int index, uint8_t r, uint8_t g, uint8_t b, float visualIntensity) {
+  visualIntensity = clamp01(visualIntensity);
   strip.setPixelColor(index, strip.Color(
-    (uint8_t)(r * brightness01),
-    (uint8_t)(g * brightness01),
-    (uint8_t)(b * brightness01)
+    (uint8_t)(r * visualIntensity),
+    (uint8_t)(g * visualIntensity),
+    (uint8_t)(b * visualIntensity)
   ));
 }
 
@@ -105,8 +101,9 @@ void motorsOn() {
   digitalWrite(MOTOR_RIGHT_PIN, HIGH);
 }
 
-// ====================== MODE 1: THE ANCHOR (Breathing Guide) ======================
-// Design: Distinct Inhale (Vibration+Light Up) vs Exhale (Silence+Light Down)
+// ====================== 模式邏輯 (核心) ======================
+
+// [MODE 1] THE ANCHOR (呼吸模式 - 暖光)
 void updateMode_Anchor(unsigned long now) {
   unsigned long cycleTime = INHALE_TIME + EXHALE_TIME;
   unsigned long timeInCycle = (now - breathCycleStart) % cycleTime;
@@ -115,58 +112,28 @@ void updateMode_Anchor(unsigned long now) {
   bool isInhale = (timeInCycle < INHALE_TIME);
 
   if (isInhale) {
-    // --- INHALE PHASE (0 -> 1) ---
+    // 吸氣: 變亮 (Ease Out)
     float progress = (float)timeInCycle / INHALE_TIME;
-    // Cubic ease out for natural lung expansion feel
-    brightness = -1.0f * progress * (progress - 2.0f); // 0 to 1
-    
-    // HAPTIC: Vibrate to signal "Take Air In"
-    // To make it organic, let's pulse it slightly like a heartbeat during inhale
-    // or just keep it steady. Let's do steady for clarity.
-    motorsOn(); 
-    
+    brightness = -1.0f * progress * (progress - 2.0f); 
+    motorsOn(); // 吸氣時震動引導
   } else {
-    // --- EXHALE PHASE (1 -> 0) ---
+    // 吐氣: 變暗 (Linear)
     float progress = (float)(timeInCycle - INHALE_TIME) / EXHALE_TIME;
-    // Linear fade out is more relaxing
-    brightness = 1.0f - progress; // 1 to 0
-    
-    // HAPTIC: Silence to signal "Let Go"
+    brightness = 1.0f - progress; 
     motorsOff();
   }
 
-  // Visual: Warm Amber
-  // Minimum brightness 0.1 so it doesn't go pitch black
-  float visualLevel = 0.1f + (brightness * 0.7f); 
-
+  // 確保最低亮度不為 0，讓手機殼看起來隨時都有微光
+  float visualLevel = 0.2f + (brightness * 0.8f); 
+  
   for(int i=0; i<LED_COUNT; i++) {
-    setLedColor(i, 255, 160, 50, visualLevel);
+    // R=255, G=140, B=40 -> 經典琥珀暖色
+    setLedColor(i, 255, 140, 40, visualLevel); 
   }
   strip.show();
 }
 
-// ====================== MODE 2: OVERWHELM (Heartbeat Grounding) ======================
-// Design: A strong, slow heartbeat to ground the user. No complex breathing.
-void updateMode_Overwhelm(unsigned long now) {
-  // 60 BPM Heartbeat pattern
-  unsigned long beatCycle = 1000; 
-  unsigned long t = now % beatCycle;
-
-  // Double beat: Lub-Dub
-  bool beat = (t < 100) || (t > 200 && t < 300);
-  
-  // Light: Pulses with heart
-  float lightPulse = beat ? 0.6f : 0.2f;
-  
-  for(int i=0; i<LED_COUNT; i++) {
-    setLedColor(i, 255, 100, 100, lightPulse); // Reddish-Pink
-  }
-  strip.show();
-
-  if (beat) motorsOn(); else motorsOff();
-}
-
-// ====================== MODE 3: THE SHIFT (Interruption) ======================
+// [MODE 3] THE SHIFT (左右切換 - 冷白光)
 void updateMode_Shift(unsigned long now) {
   if (now - lastShiftTime > SHIFT_INTERVAL) {
     shiftSideLeft = !shiftSideLeft; 
@@ -180,13 +147,14 @@ void updateMode_Shift(unsigned long now) {
   float leftLevel  = shiftSideLeft ? fadeIn : fadeOut;
   float rightLevel = shiftSideLeft ? fadeOut : fadeIn;
 
-  setLedColor(0, 200, 220, 255, 0.1f + leftLevel * 0.4f);
-  setLedColor(1, 200, 220, 255, 0.1f + leftLevel * 0.4f);
-  setLedColor(2, 200, 220, 255, 0.1f + rightLevel * 0.4f);
-  setLedColor(3, 200, 220, 255, 0.1f + rightLevel * 0.4f);
+  // R=200, G=220, B=255 -> 冷白/淡藍
+  setLedColor(0, 200, 220, 255, 0.2f + leftLevel * 0.8f);
+  setLedColor(1, 200, 220, 255, 0.2f + leftLevel * 0.8f);
+  setLedColor(2, 200, 220, 255, 0.2f + rightLevel * 0.8f);
+  setLedColor(3, 200, 220, 255, 0.2f + rightLevel * 0.8f);
   strip.show();
 
-  // Haptic: Crisp tap at start of switch
+  // 震動邏輯: 切換瞬間給一個 Tap
   if ((now - lastShiftTime) < 150) {
     if (shiftSideLeft) {
       digitalWrite(MOTOR_LEFT_PIN, HIGH);
@@ -200,22 +168,23 @@ void updateMode_Shift(unsigned long now) {
   }
 }
 
-// ====================== MODE 4/5: THE SPARK (Connection) ======================
+// [MODE 5] THE SPARK (燭光 - 金黃)
 void updateMode_Spark(unsigned long now) {
   if (now - lastFlickerTime > random(50, 150)) {
     lastFlickerTime = now;
-    currentFlickerBright = random(50, 150); 
+    currentFlickerBright = random(80, 220); // 隨機亮度
   }
   float visualLevel = currentFlickerBright / 255.0f;
   
   for(int i=0; i<LED_COUNT; i++) {
     float localVar = random(90, 110) / 100.0f;
-    setLedColor(i, 255, 120, 20, visualLevel * localVar);
+    // R=255, G=100, B=20 -> 深金黃色
+    setLedColor(i, 255, 100, 20, visualLevel * localVar); 
   }
   strip.show();
 
-  // Occasional purr
-  if (random(0, 1000) > 980) { 
+  // 隨機微震動 (Purr)
+  if (random(0, 1000) > 985) { 
     motorsOn();
     delay(20); 
     motorsOff();
@@ -224,35 +193,49 @@ void updateMode_Spark(unsigned long now) {
   }
 }
 
-// ====================== MODE 6: AMBIENT (Idle) ======================
+// [MODE 6] AMBIENT (待機 - 柔白)
 void updateMode_Ambient(unsigned long now) {
   const unsigned long driftCycle = 12000;
   float phase = (now % driftCycle) / (float)driftCycle;
   float breath = 0.5f - 0.5f * cos(2.0f * PI * phase);
-  float visualLevel = 0.05f + (breath * 0.15f);
+  
+  // 待機時稍微亮一點點，才不會像壞掉
+  float visualLevel = 0.15f + (breath * 0.25f); 
 
   for(int i=0; i<LED_COUNT; i++) {
-    setLedColor(i, 255, 220, 180, visualLevel);
+    setLedColor(i, 255, 220, 180, visualLevel); 
   }
   strip.show();
   motorsOff();
 }
 
-// ====================== EYE LOGIC ======================
+// [MODE 2] HEARTBEAT (Overwhelm)
+void updateMode_Overwhelm(unsigned long now) {
+  unsigned long beatCycle = 1000; 
+  unsigned long t = now % beatCycle;
+  bool beat = (t < 100) || (t > 200 && t < 300); 
+  float lightPulse = beat ? 1.0f : 0.3f;
+  
+  for(int i=0; i<LED_COUNT; i++) {
+    setLedColor(i, 255, 50, 50, lightPulse); // 紅色警示
+  }
+  strip.show();
+  if (beat) motorsOn(); else motorsOff();
+}
+
+// ====================== 眼睛動畫邏輯 ======================
 float getBaseLidForMode() {
   switch (currentMode) {
-    case MODE_ANCHOR:     return 0.60f; 
-    case MODE_ANCHOR_2:   return 0.60f;
-    case MODE_SHIFT:      return 0.10f; 
-    case MODE_SPARK_LOW:  return 0.20f; 
+    case MODE_ANCHOR:     return 0.60f; // 瞇眼放鬆
+    case MODE_SHIFT:      return 0.10f; // 張開專注
     case MODE_SPARK_LONE: return 0.20f;
-    case MODE_AMBIENT:    return 0.15f;
+    case MODE_AMBIENT:    return 0.30f;
     default:              return 0.20f;
   }
 }
 
 void updateEyePhysics(unsigned long now) {
-  // Blink
+  // 眨眼邏輯
   if (!blinkActive) {
     if (now >= nextBlinkTime) {
       blinkActive = true;
@@ -270,7 +253,7 @@ void updateEyePhysics(unsigned long now) {
     }
   }
 
-  // Move
+  // 眼球移動邏輯
   if (!moving && now >= nextMoveTime) {
     float rangeX = (currentMode == MODE_SHIFT) ? 35.0f : 8.0f; 
     float rangeY = 5.0f;
@@ -312,7 +295,7 @@ void drawEye(float lidLevel) {
   lidLevel = clamp01(lidLevel + blinkAmount);
   int lidH = (int)(lidLevel * eyeRadius);
 
-  // Eye 1
+  // 左眼
   eyeCanvas.fillCircle(cx1, cy, eyeRadius, ST77XX_WHITE);
   eyeCanvas.fillCircle(cx1 + eyeOffsetX, cy + eyeOffsetY, irisRadius, tft.color565(30, 140, 255));
   eyeCanvas.fillCircle(cx1 + eyeOffsetX, cy + eyeOffsetY, pupilRadius, ST77XX_BLACK);
@@ -321,7 +304,7 @@ void drawEye(float lidLevel) {
      eyeCanvas.fillRect(cx1 - eyeRadius, cy + eyeRadius - lidH, eyeRadius*2, lidH, ST77XX_BLACK); 
   }
 
-  // Eye 2
+  // 右眼
   eyeCanvas.fillCircle(cx2, cy, eyeRadius, ST77XX_WHITE);
   eyeCanvas.fillCircle(cx2 + eyeOffsetX*0.9, cy + eyeOffsetY, irisRadius, tft.color565(30, 140, 255));
   eyeCanvas.fillCircle(cx2 + eyeOffsetX*0.9, cy + eyeOffsetY, pupilRadius, ST77XX_BLACK);
@@ -333,26 +316,29 @@ void drawEye(float lidLevel) {
   tft.drawRGBBitmap(0,0, eyeCanvas.getBuffer(), 240, 240);
 }
 
-// ====================== MAIN ======================
+// ====================== 設定與主程式 ======================
 void setup() {
+  delay(2000); // 讓 ESP32 USB 準備好
   Serial.begin(115200);
-  randomSeed(analogRead(0));
 
+  Serial.println("\n>>> Nino Prototype v13 Starting... <<<");
+  
   pinMode(MOTOR_LEFT_PIN, OUTPUT);
   pinMode(MOTOR_RIGHT_PIN, OUTPUT);
   
   tft.init(240, 240);
-  tft.setRotation(0);
+  tft.setRotation(0); // 如果眼睛倒了，改成 1 或 3
   
   strip.begin();
-  strip.setBrightness(255); 
+  strip.setBrightness(MASTER_BRIGHTNESS); // 使用加強後的亮度
   strip.show();
 
   drawEye(0.0f);
-  breathCycleStart = millis(); // Init breathing timer
+  breathCycleStart = millis(); 
 }
 
 void loop() {
+  // 1. 讀取指令
   while (Serial.available() > 0) {
     char c = Serial.read();
     if (c == '\n') {
@@ -360,9 +346,9 @@ void loop() {
           int m = serialBuffer.substring(5).toInt();
           if (m >= 1 && m <= 6) {
              currentMode = m;
-             lastShiftTime = millis(); 
-             lastFlickerTime = millis();
-             breathCycleStart = millis(); // Reset breath on mode change
+             breathCycleStart = millis(); // 重置呼吸節奏
+             lastShiftTime = millis();
+             Serial.print(">>> Switched to MODE: "); Serial.println(currentMode);
           }
        }
        serialBuffer = "";
@@ -372,25 +358,18 @@ void loop() {
   }
 
   unsigned long now = millis();
+
+  // 2. 更新眼睛
   updateEyePhysics(now);
   drawEye(getBaseLidForMode());
 
+  // 3. 更新模式
   switch(currentMode) {
-    case MODE_ANCHOR:
-       updateMode_Anchor(now);
-       break;
-    case MODE_ANCHOR_2:
-       updateMode_Overwhelm(now); // Use new heartbeat mode for Overwhelm
-       break;
-    case MODE_SHIFT:
-       updateMode_Shift(now);
-       break;
+    case MODE_ANCHOR:     updateMode_Anchor(now); break;
+    case MODE_ANCHOR_2:   updateMode_Overwhelm(now); break;
+    case MODE_SHIFT:      updateMode_Shift(now); break;
     case MODE_SPARK_LOW:
-    case MODE_SPARK_LONE:
-       updateMode_Spark(now);
-       break;
-    case MODE_AMBIENT:
-       updateMode_Ambient(now);
-       break;
+    case MODE_SPARK_LONE: updateMode_Spark(now); break;
+    case MODE_AMBIENT:    updateMode_Ambient(now); break;
   }
 }
