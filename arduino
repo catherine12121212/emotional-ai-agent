@@ -1,0 +1,396 @@
+#include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
+#include <SPI.h>
+#include <Adafruit_NeoPixel.h>
+#include <math.h>
+
+// ====================== CONFIGURATION ======================
+// ST7789 Pins (Eyes)
+#define TFT_CS   2
+#define TFT_DC   1
+#define TFT_RST  10
+#define TFT_MOSI 6
+#define TFT_SCK  4
+
+// WS2812 LED Pins (The "Body")
+#define LED_PIN     3      
+#define LED_COUNT   4      
+
+// LRA Motor Pins (The "Touch")
+#define MOTOR_LEFT_PIN   8
+#define MOTOR_RIGHT_PIN  9
+
+// ====================== OBJECTS ======================
+Adafruit_ST7789 tft = Adafruit_ST7789(TFT_CS, TFT_DC, TFT_RST);
+GFXcanvas16 eyeCanvas(240, 240); 
+Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// ====================== MODES ======================
+enum Mode {
+  MODE_ANCHOR     = 1, // Acute Anxiety (Breathing Guide)
+  MODE_ANCHOR_2   = 2, // Overwhelm (Heartbeat Grounding)
+  MODE_SHIFT      = 3, // Rumination (Bilateral Tapping)
+  MODE_SPARK_LOW  = 4, // Low Mood (Connection)
+  MODE_SPARK_LONE = 5, // Loneliness (Connection)
+  MODE_AMBIENT    = 6  // Insight/Idle (Ambient Aliveness)
+};
+
+uint8_t currentMode = MODE_ANCHOR;
+String serialBuffer;
+
+// ====================== EYE PARAMETERS ======================
+int eyeRadius   = 55;
+int irisRadius  = 26;
+int pupilRadius = 12;
+
+float eyeOffsetX = 0.0f;
+float eyeOffsetY = 0.0f;
+float moveTargetX = 0.0f;
+float moveTargetY = 0.0f;
+float moveStartX = 0.0f;
+float moveStartY = 0.0f;
+unsigned long moveStartTime = 0;
+unsigned long moveDuration  = 1000;
+unsigned long nextMoveTime  = 0;
+bool moving = false;
+
+// Blink
+bool blinkActive = false;
+unsigned long blinkStartTime = 0;
+unsigned long blinkDuration  = 180;
+unsigned long nextBlinkTime  = 0;
+float blinkAmount = 0.0f;
+
+// ====================== SENSORY STATE VARIABLES ======================
+unsigned long lastShiftTime = 0;
+bool shiftSideLeft = true; 
+const int SHIFT_INTERVAL = 800; 
+
+unsigned long lastFlickerTime = 0;
+uint8_t currentFlickerBright = 100;
+
+// Breathing State
+const int INHALE_TIME = 4000; // 4 seconds inhale
+const int EXHALE_TIME = 6000; // 6 seconds exhale (longer for calming)
+unsigned long breathCycleStart = 0;
+
+// ====================== UTILS ======================
+float clamp01(float v) {
+  if (v < 0.0f) return 0.0f;
+  if (v > 1.0f) return 1.0f;
+  return v;
+}
+
+float easeInOut(float t) {
+  t = clamp01(t);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+void setLedColor(int index, uint8_t r, uint8_t g, uint8_t b, float brightness01) {
+  brightness01 = clamp01(brightness01);
+  strip.setPixelColor(index, strip.Color(
+    (uint8_t)(r * brightness01),
+    (uint8_t)(g * brightness01),
+    (uint8_t)(b * brightness01)
+  ));
+}
+
+void motorsOff() {
+  digitalWrite(MOTOR_LEFT_PIN, LOW);
+  digitalWrite(MOTOR_RIGHT_PIN, LOW);
+}
+
+void motorsOn() {
+  digitalWrite(MOTOR_LEFT_PIN, HIGH);
+  digitalWrite(MOTOR_RIGHT_PIN, HIGH);
+}
+
+// ====================== MODE 1: THE ANCHOR (Breathing Guide) ======================
+// Design: Distinct Inhale (Vibration+Light Up) vs Exhale (Silence+Light Down)
+void updateMode_Anchor(unsigned long now) {
+  unsigned long cycleTime = INHALE_TIME + EXHALE_TIME;
+  unsigned long timeInCycle = (now - breathCycleStart) % cycleTime;
+
+  float brightness = 0.0f;
+  bool isInhale = (timeInCycle < INHALE_TIME);
+
+  if (isInhale) {
+    // --- INHALE PHASE (0 -> 1) ---
+    float progress = (float)timeInCycle / INHALE_TIME;
+    // Cubic ease out for natural lung expansion feel
+    brightness = -1.0f * progress * (progress - 2.0f); // 0 to 1
+    
+    // HAPTIC: Vibrate to signal "Take Air In"
+    // To make it organic, let's pulse it slightly like a heartbeat during inhale
+    // or just keep it steady. Let's do steady for clarity.
+    motorsOn(); 
+    
+  } else {
+    // --- EXHALE PHASE (1 -> 0) ---
+    float progress = (float)(timeInCycle - INHALE_TIME) / EXHALE_TIME;
+    // Linear fade out is more relaxing
+    brightness = 1.0f - progress; // 1 to 0
+    
+    // HAPTIC: Silence to signal "Let Go"
+    motorsOff();
+  }
+
+  // Visual: Warm Amber
+  // Minimum brightness 0.1 so it doesn't go pitch black
+  float visualLevel = 0.1f + (brightness * 0.7f); 
+
+  for(int i=0; i<LED_COUNT; i++) {
+    setLedColor(i, 255, 160, 50, visualLevel);
+  }
+  strip.show();
+}
+
+// ====================== MODE 2: OVERWHELM (Heartbeat Grounding) ======================
+// Design: A strong, slow heartbeat to ground the user. No complex breathing.
+void updateMode_Overwhelm(unsigned long now) {
+  // 60 BPM Heartbeat pattern
+  unsigned long beatCycle = 1000; 
+  unsigned long t = now % beatCycle;
+
+  // Double beat: Lub-Dub
+  bool beat = (t < 100) || (t > 200 && t < 300);
+  
+  // Light: Pulses with heart
+  float lightPulse = beat ? 0.6f : 0.2f;
+  
+  for(int i=0; i<LED_COUNT; i++) {
+    setLedColor(i, 255, 100, 100, lightPulse); // Reddish-Pink
+  }
+  strip.show();
+
+  if (beat) motorsOn(); else motorsOff();
+}
+
+// ====================== MODE 3: THE SHIFT (Interruption) ======================
+void updateMode_Shift(unsigned long now) {
+  if (now - lastShiftTime > SHIFT_INTERVAL) {
+    shiftSideLeft = !shiftSideLeft; 
+    lastShiftTime = now;
+  }
+
+  float progress = (now - lastShiftTime) / (float)SHIFT_INTERVAL;
+  float fadeOut = 1.0f - progress;
+  float fadeIn  = progress;
+
+  float leftLevel  = shiftSideLeft ? fadeIn : fadeOut;
+  float rightLevel = shiftSideLeft ? fadeOut : fadeIn;
+
+  setLedColor(0, 200, 220, 255, 0.1f + leftLevel * 0.4f);
+  setLedColor(1, 200, 220, 255, 0.1f + leftLevel * 0.4f);
+  setLedColor(2, 200, 220, 255, 0.1f + rightLevel * 0.4f);
+  setLedColor(3, 200, 220, 255, 0.1f + rightLevel * 0.4f);
+  strip.show();
+
+  // Haptic: Crisp tap at start of switch
+  if ((now - lastShiftTime) < 150) {
+    if (shiftSideLeft) {
+      digitalWrite(MOTOR_LEFT_PIN, HIGH);
+      digitalWrite(MOTOR_RIGHT_PIN, LOW);
+    } else {
+      digitalWrite(MOTOR_LEFT_PIN, LOW);
+      digitalWrite(MOTOR_RIGHT_PIN, HIGH);
+    }
+  } else {
+    motorsOff();
+  }
+}
+
+// ====================== MODE 4/5: THE SPARK (Connection) ======================
+void updateMode_Spark(unsigned long now) {
+  if (now - lastFlickerTime > random(50, 150)) {
+    lastFlickerTime = now;
+    currentFlickerBright = random(50, 150); 
+  }
+  float visualLevel = currentFlickerBright / 255.0f;
+  
+  for(int i=0; i<LED_COUNT; i++) {
+    float localVar = random(90, 110) / 100.0f;
+    setLedColor(i, 255, 120, 20, visualLevel * localVar);
+  }
+  strip.show();
+
+  // Occasional purr
+  if (random(0, 1000) > 980) { 
+    motorsOn();
+    delay(20); 
+    motorsOff();
+  } else {
+    motorsOff();
+  }
+}
+
+// ====================== MODE 6: AMBIENT (Idle) ======================
+void updateMode_Ambient(unsigned long now) {
+  const unsigned long driftCycle = 12000;
+  float phase = (now % driftCycle) / (float)driftCycle;
+  float breath = 0.5f - 0.5f * cos(2.0f * PI * phase);
+  float visualLevel = 0.05f + (breath * 0.15f);
+
+  for(int i=0; i<LED_COUNT; i++) {
+    setLedColor(i, 255, 220, 180, visualLevel);
+  }
+  strip.show();
+  motorsOff();
+}
+
+// ====================== EYE LOGIC ======================
+float getBaseLidForMode() {
+  switch (currentMode) {
+    case MODE_ANCHOR:     return 0.60f; 
+    case MODE_ANCHOR_2:   return 0.60f;
+    case MODE_SHIFT:      return 0.10f; 
+    case MODE_SPARK_LOW:  return 0.20f; 
+    case MODE_SPARK_LONE: return 0.20f;
+    case MODE_AMBIENT:    return 0.15f;
+    default:              return 0.20f;
+  }
+}
+
+void updateEyePhysics(unsigned long now) {
+  // Blink
+  if (!blinkActive) {
+    if (now >= nextBlinkTime) {
+      blinkActive = true;
+      blinkStartTime = now;
+    }
+    blinkAmount = 0.0f;
+  } else {
+    float t = (float)(now - blinkStartTime) / (float)blinkDuration;
+    if (t >= 1.0f) {
+      blinkActive = false;
+      blinkAmount = 0.0f;
+      nextBlinkTime = now + random(2000, 6000); 
+    } else {
+      blinkAmount = (t < 0.5f) ? (t * 2.0f) : ((1.0f - t) * 2.0f);
+    }
+  }
+
+  // Move
+  if (!moving && now >= nextMoveTime) {
+    float rangeX = (currentMode == MODE_SHIFT) ? 35.0f : 8.0f; 
+    float rangeY = 5.0f;
+    
+    moveStartX = eyeOffsetX;
+    moveStartY = eyeOffsetY;
+    
+    if (currentMode == MODE_SHIFT) {
+       moveTargetX = (eyeOffsetX > 0) ? -rangeX : rangeX;
+       moveTargetY = random(-3, 4);
+    } else {
+       moveTargetX = random(-rangeX, rangeX);
+       moveTargetY = random(-rangeY, rangeY);
+    }
+    
+    moveDuration = random(800, 1500);
+    moveStartTime = now;
+    moving = true;
+    nextMoveTime = now + moveDuration + random(1000, 4000);
+  }
+
+  if (moving) {
+    float t = (float)(now - moveStartTime) / (float)moveDuration;
+    if (t >= 1.0f) {
+      moving = false;
+      eyeOffsetX = moveTargetX;
+      eyeOffsetY = moveTargetY;
+    } else {
+      float e = easeInOut(t);
+      eyeOffsetX = moveStartX + (moveTargetX - moveStartX) * e;
+      eyeOffsetY = moveStartY + (moveTargetY - moveStartY) * e;
+    }
+  }
+}
+
+void drawEye(float lidLevel) {
+  eyeCanvas.fillScreen(ST77XX_BLACK);
+  int cx1 = 80, cx2 = 160, cy = 120;
+  lidLevel = clamp01(lidLevel + blinkAmount);
+  int lidH = (int)(lidLevel * eyeRadius);
+
+  // Eye 1
+  eyeCanvas.fillCircle(cx1, cy, eyeRadius, ST77XX_WHITE);
+  eyeCanvas.fillCircle(cx1 + eyeOffsetX, cy + eyeOffsetY, irisRadius, tft.color565(30, 140, 255));
+  eyeCanvas.fillCircle(cx1 + eyeOffsetX, cy + eyeOffsetY, pupilRadius, ST77XX_BLACK);
+  if(lidH > 0) {
+     eyeCanvas.fillRect(cx1 - eyeRadius, cy - eyeRadius, eyeRadius*2, lidH, ST77XX_BLACK); 
+     eyeCanvas.fillRect(cx1 - eyeRadius, cy + eyeRadius - lidH, eyeRadius*2, lidH, ST77XX_BLACK); 
+  }
+
+  // Eye 2
+  eyeCanvas.fillCircle(cx2, cy, eyeRadius, ST77XX_WHITE);
+  eyeCanvas.fillCircle(cx2 + eyeOffsetX*0.9, cy + eyeOffsetY, irisRadius, tft.color565(30, 140, 255));
+  eyeCanvas.fillCircle(cx2 + eyeOffsetX*0.9, cy + eyeOffsetY, pupilRadius, ST77XX_BLACK);
+  if(lidH > 0) {
+     eyeCanvas.fillRect(cx2 - eyeRadius, cy - eyeRadius, eyeRadius*2, lidH, ST77XX_BLACK); 
+     eyeCanvas.fillRect(cx2 - eyeRadius, cy + eyeRadius - lidH, eyeRadius*2, lidH, ST77XX_BLACK); 
+  }
+  
+  tft.drawRGBBitmap(0,0, eyeCanvas.getBuffer(), 240, 240);
+}
+
+// ====================== MAIN ======================
+void setup() {
+  Serial.begin(115200);
+  randomSeed(analogRead(0));
+
+  pinMode(MOTOR_LEFT_PIN, OUTPUT);
+  pinMode(MOTOR_RIGHT_PIN, OUTPUT);
+  
+  tft.init(240, 240);
+  tft.setRotation(0);
+  
+  strip.begin();
+  strip.setBrightness(255); 
+  strip.show();
+
+  drawEye(0.0f);
+  breathCycleStart = millis(); // Init breathing timer
+}
+
+void loop() {
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == '\n') {
+       if (serialBuffer.startsWith("MODE:")) {
+          int m = serialBuffer.substring(5).toInt();
+          if (m >= 1 && m <= 6) {
+             currentMode = m;
+             lastShiftTime = millis(); 
+             lastFlickerTime = millis();
+             breathCycleStart = millis(); // Reset breath on mode change
+          }
+       }
+       serialBuffer = "";
+    } else if (c != '\r') {
+       serialBuffer += c;
+    }
+  }
+
+  unsigned long now = millis();
+  updateEyePhysics(now);
+  drawEye(getBaseLidForMode());
+
+  switch(currentMode) {
+    case MODE_ANCHOR:
+       updateMode_Anchor(now);
+       break;
+    case MODE_ANCHOR_2:
+       updateMode_Overwhelm(now); // Use new heartbeat mode for Overwhelm
+       break;
+    case MODE_SHIFT:
+       updateMode_Shift(now);
+       break;
+    case MODE_SPARK_LOW:
+    case MODE_SPARK_LONE:
+       updateMode_Spark(now);
+       break;
+    case MODE_AMBIENT:
+       updateMode_Ambient(now);
+       break;
+  }
+}
