@@ -1,9 +1,11 @@
-# app_nino_v13.py
+# app_nino_v16.py
 # ---------------------------------------------------------
-# Nino v13.2 · Passive Companion & Contextual Breathing
+# Nino v16.0 · Final Mode Mapping
 # Update:
-#   - 🚫 Removed auto-welcome message (User initiates or Nino waits).
-#   - 🌬️ Breathing invite only appears when [MODE:1] is triggered.
+#   - [MODE:1] Anchor (Breathing UI)
+#   - [MODE:6] Spark (Connection)
+#   - [MODE:3] Shift (Interruption)
+#   - [MODE:2] Ambient (Idle)
 # ---------------------------------------------------------
 
 import os, re, time
@@ -15,7 +17,7 @@ from openai import OpenAI
 # ---------------------------
 # Streamlit & API setup
 # ---------------------------
-st.set_page_config(page_title="Nino", page_icon="🧶", layout="centered")
+st.set_page_config(page_title="Nino Interface", page_icon="🧶", layout="centered")
 
 api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
 if not api_key:
@@ -25,8 +27,7 @@ if not api_key:
 client = OpenAI(api_key=api_key)
 
 # =========================================================
-# 🎨 CSS Animation (Breathing Circle)
-# Synced with Arduino Mode 1: 4s Inhale / 6s Exhale = 10s Total
+# 🎨 CSS Animation (Breathing Circle - for Mode 1)
 # =========================================================
 st.markdown("""
 <style>
@@ -93,8 +94,56 @@ def send_command_to_arduino(mode_id):
                 del st.session_state.serial_conn
 
 # =========================================================
-# Helper Functions
+# System Prompt (Final Mapping)
 # =========================================================
+# 1: Anchor (Breathing)
+# 6: Spark (Connection)
+# 3: Shift (Interruption)
+# 2: Ambient (Idle)
+
+NINO_SYSTEM_PROMPT = """
+### Role & Identity
+You are **Nino**, an embodied AI companion aimed at emotional regulation.
+Your goal is to identify the user's emotional state and trigger the correct haptic feedback mode.
+
+### 🧠 Logic: Emotional State Estimation
+Analyze the user's text and choose ONE mode to append at the end of your response.
+
+**1. [MODE:1] The Anchor (Acute Anxiety/Deep Breath)**
+* **Trigger:** User is panicking, anxious, overwhelmed, or you want to invite them to breathe.
+* **Action:** Slow, calming, grounding words. *This mode triggers the breathing UI.*
+
+**2. [MODE:6] The Spark (Connection)**
+* **Trigger:** User shares a moment of joy, connection, or needs a "high-five" / warm acknowledgement.
+* **Action:** Lighthearted, engaging, "I see you."
+
+**3. [MODE:3] The Shift (Rumination/Interruption)**
+* **Trigger:** User is stuck in a loop, obsessive thinking, spirals.
+* **Action:** Gently disrupt the thought pattern (e.g., ask a sensory question).
+
+**4. [MODE:2] Ambient Aliveness (Idle/Presence)**
+* **Trigger:** General greeting, waiting, quiet moments, or stable conversation.
+* **Action:** Minimalist, steady presence.
+
+### Output Rules
+* **MANDATORY:** End every response with exactly one tag: `[MODE:1]`, `[MODE:6]`, `[MODE:3]`, or `[MODE:2]`.
+"""
+
+# =========================================================
+# Session State & Helper Functions
+# =========================================================
+if "messages" not in st.session_state:
+    st.session_state.messages = [{"role": "system", "content": NINO_SYSTEM_PROMPT}]
+    # Initial State: Ambient (Mode 2)
+    st.session_state.messages.append({"role": "assistant", "content": "Hi. (Nino is here)\n[MODE:2]"})
+
+if "breathing_mode_active" not in st.session_state:
+    st.session_state.breathing_active = False
+
+# Track Current Mode (Default 2 - Ambient)
+if "current_mode" not in st.session_state:
+    st.session_state.current_mode = 2
+
 def safe_chat_completion(messages):
     try:
         resp = client.chat.completions.create(
@@ -109,93 +158,97 @@ def safe_chat_completion(messages):
 def parse_and_send_response(raw_text):
     mode_pattern = r"\[MODE:(\d)\]"
     match = re.search(mode_pattern, raw_text)
-    mode_id = 6 
+    
+    # Default to current mode if no tag found
+    mode_id = st.session_state.current_mode 
     clean_text = raw_text
+
     if match:
         mode_id = int(match.group(1))
         clean_text = re.sub(mode_pattern, "", raw_text).strip()
     
+    # Update State
+    st.session_state.current_mode = mode_id
     send_command_to_arduino(mode_id)
+    
     return clean_text, mode_id
-
-# =========================================================
-# System Prompt (Nino v13.2 - Passive)
-# =========================================================
-NINO_SYSTEM_PROMPT = """
-### Role & Identity
-You are **Nino**, a haptic AI companion.
-* **Core:** Steady, grounding presence.
-* **Protocol:** Offer "Grounding Truth" (insights) and "No Assumption" (validate facts, not feelings).
-* **Hardware:** Always append `[MODE:X]` at the end.
-
-### Interaction Strategy
-1.  **Passive Start:** Do NOT invite the user to breathe in the beginning. Just say "Hi" or wait for them.
-2.  **Contextual Invitation:** * ONLY if you detect Acute Anxiety (`[MODE:1]`), you should verbally invite them to follow the light.
-    * *Example:* "深呼吸... 跟著手裡的節奏。吸氣... 吐氣... [MODE:1]"
-
-### Modes
-* [MODE:1] Acute Anxiety (Breathing)
-* [MODE:2] Overwhelm (Heartbeat)
-* [MODE:3] Rumination (Tapping)
-* [MODE:4] Low Mood (Dim)
-* [MODE:5] Loneliness (Spark)
-* [MODE:6] Calm (Ambient)
-"""
-
-# =========================================================
-# Session State
-# =========================================================
-if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "system", "content": NINO_SYSTEM_PROMPT}]
-    # 🆕 Simple Passive Greeting (No pressure)
-    st.session_state.messages.append({"role": "assistant", "content": "Hi. (暖光)\n[MODE:6]"})
-
-if "breathing_mode_active" not in st.session_state:
-    st.session_state.breathing_active = False
 
 # =========================================================
 # UI Layout
 # =========================================================
 
-# --- Sidebar ---
+# --- Sidebar: Status & Controls ---
 with st.sidebar:
-    st.header("Nino")
-    st.caption("Bio-Digital Companion")
+    st.header("Nino 🧶")
     
-    # Toggle Button (Always available but manual)
+    # 🆕 DYNAMIC MODE DISPLAY
+    st.subheader("Current State")
+    
+    # Updated Info Dictionary (v16 Mapping)
+    mode_info = {
+        1: {"label": "The Anchor ⚓", "desc": "Deep Breath (Anxiety)", "color": "#FF4B4B"},   # Red/Calm
+        6: {"label": "The Spark ✨", "desc": "Connection (Joy)", "color": "#FB923C"},        # Orange/Spark
+        3: {"label": "The Shift ⚡", "desc": "Interruption (Focus)", "color": "#8B5CF6"},     # Purple/Shift
+        2: {"label": "Ambient 🍃", "desc": "Aliveness (Idle)", "color": "#71717a"},          # Grey/Idle
+    }
+    
+    curr = st.session_state.current_mode
+    info = mode_info.get(curr, mode_info[2]) # Default to Ambient
+    
+    st.markdown(f"""
+    <div style="background-color: white; padding: 15px; border-radius: 10px; border-left: 6px solid {info['color']}; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+        <div style="font-size: 18px; font-weight: bold; color: #333;">{info['label']}</div>
+        <div style="font-size: 12px; color: #666; margin-top: 5px;">Mode {curr}: {info['desc']}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # Manual Override
     if st.session_state.breathing_active:
-        if st.button("⬅️ 回到對話 (Back to Chat)", type="primary"):
+        if st.button("⬅️ Back to Chat", type="primary"):
             st.session_state.breathing_active = False
-            send_command_to_arduino(6) # Reset to Calm
+            # Return to Ambient (2)
+            st.session_state.current_mode = 2
+            send_command_to_arduino(2)
             st.rerun()
     else:
-        if st.button("🌬️ 進入呼吸模式 (Manual)"):
-            st.session_state.breathing_active = True
-            send_command_to_arduino(1)
-            st.rerun()
+        st.write("Debug Control")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Force Anchor (1)"):
+                st.session_state.current_mode = 1
+                send_command_to_arduino(1)
+                st.rerun()
+        with col2:
+            if st.button("Force Spark (6)"):
+                st.session_state.current_mode = 6
+                send_command_to_arduino(6)
+                st.rerun()
 
     st.markdown("---")
     if st.button("Clear Memory"):
         st.session_state.messages = [{"role": "system", "content": NINO_SYSTEM_PROMPT}]
-        st.session_state.messages.append({"role": "assistant", "content": "Hi. (暖光)\n[MODE:6]"})
+        st.session_state.messages.append({"role": "assistant", "content": "Hi.\n[MODE:2]"})
         st.session_state.breathing_active = False
-        send_command_to_arduino(6)
+        st.session_state.current_mode = 2
+        send_command_to_arduino(2)
         st.rerun()
 
 # --- Main Logic ---
 
 if st.session_state.breathing_active:
     # -----------------------------------------------------
-    # VIEW A: Breathing Exercise
+    # VIEW A: Breathing Exercise (Triggered by Mode 1)
     # -----------------------------------------------------
-    st.title("Inhale... Exhale...")
+    st.title("The Anchor")
     st.markdown("""
         <div class="breath-container">
-            <div class="breath-circle">Nino</div>
+            <div class="breath-circle">Inhale</div>
             <div class="instruction-text">
-                感受手中的震動...<br>
-                圓圈變大時吸氣 (4秒)<br>
-                圓圈變小時吐氣 (6秒)
+                Focus on the light.<br>
+                Expanding: Inhale (4s)<br>
+                Contracting: Exhale (6s)
             </div>
         </div>
     """, unsafe_allow_html=True)
@@ -222,30 +275,25 @@ else:
         st.session_state.messages.append({"role": "user", "content": user_input})
 
         with st.chat_message("assistant"):
-            with st.spinner("Nino is sensing..."):
+            with st.spinner("Sensing..."):
                 raw_reply = safe_chat_completion(st.session_state.messages)
                 clean_reply, new_mode = parse_and_send_response(raw_reply)
                 st.markdown(clean_reply)
                 
                 # 🔥 Contextual Feature:
-                # If AI triggers MODE 1 (Anxiety), show the button RIGHT HERE in the chat flow
+                # IF Nino switches to [MODE:1] (The Anchor), suggest breathing UI
                 if new_mode == 1:
                     st.session_state.show_breath_suggestion = True
                 else:
                     st.session_state.show_breath_suggestion = False
 
         st.session_state.messages.append({"role": "assistant", "content": raw_reply})
-        
-        # If High Anxiety was detected, force a rerun to show the button below (optional UX)
-        if new_mode == 1:
-            st.rerun()
+        st.rerun()
 
-    # 💡 Contextual Button Appearance
-    # This button only appears if the LAST message was Mode 1 (Anxiety)
-    if st.session_state.get("show_breath_suggestion", False):
-        st.info("💡 Nino 偵測到您可能需要調節呼吸。")
-        if st.button("開啟視覺呼吸引導 (Open Breathing Guide)"):
+    # Contextual Button (Bottom of chat)
+    # Checks if current mode is 1 (Anchor)
+    if st.session_state.get("show_breath_suggestion", False) and st.session_state.current_mode == 1:
+        st.info("⚓ Nino 進入了 Anchor 狀態，協助您穩定情緒。")
+        if st.button("開啟呼吸調節畫面 (Open Breathing Guide)"):
             st.session_state.breathing_active = True
-            send_command_to_arduino(1) # Ensure hardware locks to mode 1
-            st.session_state.show_breath_suggestion = False # Clear flag
             st.rerun()
