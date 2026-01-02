@@ -1,11 +1,9 @@
-# app_nino_v16.py
+# app_nino_v16_1.py
 # ---------------------------------------------------------
-# Nino v16.0 · Final Mode Mapping
+# Nino v16.1 · Fix Sidebar Display
 # Update:
-#   - [MODE:1] Anchor (Breathing UI)
-#   - [MODE:6] Spark (Connection)
-#   - [MODE:3] Shift (Interruption)
-#   - [MODE:2] Ambient (Idle)
+#   - 🛠️ UI Fix: Replaced custom CSS with native st.metric for visibility.
+#   - 🧠 Logic: Same mapping (1:Anchor, 6:Spark, 3:Shift, 2:Ambient).
 # ---------------------------------------------------------
 
 import os, re, time
@@ -25,6 +23,19 @@ if not api_key:
     st.stop()
 
 client = OpenAI(api_key=api_key)
+
+# =========================================================
+# State Initialization (Moved to Top for Safety)
+# =========================================================
+if "messages" not in st.session_state:
+    # Initial Prompt
+    st.session_state.messages = [] # Will be filled in logic below
+
+if "current_mode" not in st.session_state:
+    st.session_state.current_mode = 2 # Default: Ambient
+
+if "breathing_mode_active" not in st.session_state:
+    st.session_state.breathing_active = False
 
 # =========================================================
 # 🎨 CSS Animation (Breathing Circle - for Mode 1)
@@ -94,13 +105,8 @@ def send_command_to_arduino(mode_id):
                 del st.session_state.serial_conn
 
 # =========================================================
-# System Prompt (Final Mapping)
+# System Prompt (Logic)
 # =========================================================
-# 1: Anchor (Breathing)
-# 6: Spark (Connection)
-# 3: Shift (Interruption)
-# 2: Ambient (Idle)
-
 NINO_SYSTEM_PROMPT = """
 ### Role & Identity
 You are **Nino**, an embodied AI companion aimed at emotional regulation.
@@ -129,21 +135,15 @@ Analyze the user's text and choose ONE mode to append at the end of your respons
 * **MANDATORY:** End every response with exactly one tag: `[MODE:1]`, `[MODE:6]`, `[MODE:3]`, or `[MODE:2]`.
 """
 
-# =========================================================
-# Session State & Helper Functions
-# =========================================================
-if "messages" not in st.session_state:
+# Re-init messages if empty (Logic moved here to use prompt)
+if not st.session_state.messages:
     st.session_state.messages = [{"role": "system", "content": NINO_SYSTEM_PROMPT}]
-    # Initial State: Ambient (Mode 2)
     st.session_state.messages.append({"role": "assistant", "content": "Hi. (Nino is here)\n[MODE:2]"})
 
-if "breathing_mode_active" not in st.session_state:
-    st.session_state.breathing_active = False
 
-# Track Current Mode (Default 2 - Ambient)
-if "current_mode" not in st.session_state:
-    st.session_state.current_mode = 2
-
+# =========================================================
+# Helper Functions
+# =========================================================
 def safe_chat_completion(messages):
     try:
         resp = client.chat.completions.create(
@@ -177,30 +177,39 @@ def parse_and_send_response(raw_text):
 # UI Layout
 # =========================================================
 
-# --- Sidebar: Status & Controls ---
+# --- Sidebar: Native Visuals (Guaranteed Visibility) ---
 with st.sidebar:
     st.header("Nino 🧶")
     
-    # 🆕 DYNAMIC MODE DISPLAY
-    st.subheader("Current State")
-    
-    # Updated Info Dictionary (v16 Mapping)
+    # Mode Info Dictionary
     mode_info = {
-        1: {"label": "The Anchor ⚓", "desc": "Deep Breath (Anxiety)", "color": "#FF4B4B"},   # Red/Calm
-        6: {"label": "The Spark ✨", "desc": "Connection (Joy)", "color": "#FB923C"},        # Orange/Spark
-        3: {"label": "The Shift ⚡", "desc": "Interruption (Focus)", "color": "#8B5CF6"},     # Purple/Shift
-        2: {"label": "Ambient 🍃", "desc": "Aliveness (Idle)", "color": "#71717a"},          # Grey/Idle
+        1: {"label": "The Anchor", "icon": "⚓", "desc": "Deep Breath (Anxiety)"},
+        6: {"label": "The Spark", "icon": "✨", "desc": "Connection (Joy)"},
+        3: {"label": "The Shift", "icon": "⚡", "desc": "Interruption (Focus)"},
+        2: {"label": "Ambient", "icon": "🍃", "desc": "Aliveness (Idle)"},
     }
     
     curr = st.session_state.current_mode
-    info = mode_info.get(curr, mode_info[2]) # Default to Ambient
+    # Fallback
+    info = mode_info.get(curr, mode_info[2]) 
     
-    st.markdown(f"""
-    <div style="background-color: white; padding: 15px; border-radius: 10px; border-left: 6px solid {info['color']}; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
-        <div style="font-size: 18px; font-weight: bold; color: #333;">{info['label']}</div>
-        <div style="font-size: 12px; color: #666; margin-top: 5px;">Mode {curr}: {info['desc']}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    # ✅ FIX: Use st.metric (Native Element) - Always Visible
+    st.subheader("Current State")
+    st.metric(
+        label=info['label'], 
+        value=f"Mode {curr}", 
+        delta=info['icon']
+    )
+    
+    # Helper box
+    if curr == 1:
+        st.error(info['desc']) # Red box for Anchor
+    elif curr == 6:
+        st.warning(info['desc']) # Yellow/Orange box for Spark
+    elif curr == 3:
+        st.info(info['desc']) # Blue box for Shift
+    else:
+        st.success(info['desc']) # Green box (or similar) for Ambient
 
     st.markdown("---")
 
@@ -208,26 +217,23 @@ with st.sidebar:
     if st.session_state.breathing_active:
         if st.button("⬅️ Back to Chat", type="primary"):
             st.session_state.breathing_active = False
-            # Return to Ambient (2)
             st.session_state.current_mode = 2
             send_command_to_arduino(2)
             st.rerun()
     else:
-        st.write("Debug Control")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Force Anchor (1)"):
-                st.session_state.current_mode = 1
-                send_command_to_arduino(1)
-                st.rerun()
-        with col2:
-            if st.button("Force Spark (6)"):
-                st.session_state.current_mode = 6
-                send_command_to_arduino(6)
-                st.rerun()
+        st.caption("Manual Testing")
+        c1, c2 = st.columns(2)
+        if c1.button("Force Mode 1"):
+            st.session_state.current_mode = 1
+            send_command_to_arduino(1)
+            st.rerun()
+        if c2.button("Force Mode 6"):
+            st.session_state.current_mode = 6
+            send_command_to_arduino(6)
+            st.rerun()
 
     st.markdown("---")
-    if st.button("Clear Memory"):
+    if st.button("Reset / Clear"):
         st.session_state.messages = [{"role": "system", "content": NINO_SYSTEM_PROMPT}]
         st.session_state.messages.append({"role": "assistant", "content": "Hi.\n[MODE:2]"})
         st.session_state.breathing_active = False
@@ -239,9 +245,9 @@ with st.sidebar:
 
 if st.session_state.breathing_active:
     # -----------------------------------------------------
-    # VIEW A: Breathing Exercise (Triggered by Mode 1)
+    # VIEW A: Breathing Exercise
     # -----------------------------------------------------
-    st.title("The Anchor")
+    st.title("The Anchor ⚓")
     st.markdown("""
         <div class="breath-container">
             <div class="breath-circle">Inhale</div>
@@ -257,7 +263,7 @@ else:
     # -----------------------------------------------------
     # VIEW B: Chat Interface
     # -----------------------------------------------------
-    st.title("Nino")
+    st.title("Nino Chat")
     
     # History
     for msg in st.session_state.messages:
@@ -280,20 +286,19 @@ else:
                 clean_reply, new_mode = parse_and_send_response(raw_reply)
                 st.markdown(clean_reply)
                 
-                # 🔥 Contextual Feature:
-                # IF Nino switches to [MODE:1] (The Anchor), suggest breathing UI
+                # Contextual UI Trigger
                 if new_mode == 1:
                     st.session_state.show_breath_suggestion = True
                 else:
                     st.session_state.show_breath_suggestion = False
 
         st.session_state.messages.append({"role": "assistant", "content": raw_reply})
+        # Force rerun to update Sidebar Metric immediately
         st.rerun()
 
     # Contextual Button (Bottom of chat)
-    # Checks if current mode is 1 (Anchor)
     if st.session_state.get("show_breath_suggestion", False) and st.session_state.current_mode == 1:
-        st.info("⚓ Nino 進入了 Anchor 狀態，協助您穩定情緒。")
+        st.info("⚓ Nino 偵測到您可能需要調節呼吸。")
         if st.button("開啟呼吸調節畫面 (Open Breathing Guide)"):
             st.session_state.breathing_active = True
             st.rerun()
